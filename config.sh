@@ -28,8 +28,8 @@ case `uname` in
 	exit -1
 esac
 
-GITREPO=${GITREPO:-"git://github.com/mozilla-b2g/b2g-manifest"}
-BRANCH=${BRANCH:-v1-train}
+GITREPO=${GITREPO:-"git://github.com/jld/b2g-manifest"}
+BRANCH=${BRANCH:-profiling-v1}
 
 GIT_TEMP_REPO="tmp_manifest_repo"
 if [ -n "$2" ]; then
