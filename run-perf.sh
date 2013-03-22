@@ -55,6 +55,10 @@ case $1 in
 
     record)
 	shift
+	need_perf=$("$ADB" shell 'test -e /cache/perf; echo $?' | tr -d \\r)
+	if [ "$need_perf" -ne 0 ]; then
+	    "$ADB" push "$target_perf" /cache/perf
+	fi
 	{   echo 'cd /cache && ./perf record '"$*"' & perf_pid=$!';
 	    {   sleep 0.25
 		echo >&2
