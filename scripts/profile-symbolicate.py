@@ -27,6 +27,7 @@ class Library:
     self.end = lib_dict["end"]
     self.offset = lib_dict["offset"]
     self.target_name = lib_dict["name"]
+    self.space = lib_dict.get("space", None)
     self.verbose = verbose
     self.host_name = None
     self.located = False
@@ -172,7 +173,8 @@ class Library:
     for i in range(0,len(addresses_strs), 256):
       slice = addresses_strs[i:i+256]
       if progress:
-        print "Resolving symbols for", self.target_name, len(slice), "addresses"
+        print "Resolving symbols for", self.target_name, \
+            ("(space %s)" % self.space if self.space else ""), len(slice), "addresses"
       syms = self.AddressesToSymbols(slice)
       for j in range(len(syms)):
         self.symbols[addresses_strs[i+j]] = syms[j]
@@ -204,20 +206,24 @@ class Libraries:
     for lib in self.libs:
       lib.DumpSymbols()
 
-  def AddressToLib(self, address):
+  def AddressToLib(self, address, space):
     """Does a binary search through our ordered collection of libraries."""
-    i = bisect.bisect(self.libs_start, address)
-    if i:
-      i = i - 1
-    if i < len(self.libs_start):
+    limit = bisect.bisect(self.libs_start, address)
+    if limit == 0:
+      return None
+    for i in reversed(xrange(limit)):
       lib = self.libs[i]
-      if lib.ContainsAddress(address):
-        return lib
+      if lib.space != space:
+        continue
+      return lib if lib.ContainsAddress(address) else None
+    return None
 
-  def Lookup(self, address):
+  def Lookup(self, address, space):
     """Figures out which library a given address comes from."""
-    if not (self.last_lib and self.last_lib.ContainsAddress(address)):
-      self.last_lib = self.AddressToLib(address)
+    if not (self.last_lib and
+            self.last_lib.ContainsAddress(address) and
+            self.last_lib.space == space):
+      self.last_lib = self.AddressToLib(address, space)
     return self.last_lib
 
   def ResolveSymbols(self, progress=True):
@@ -241,7 +247,7 @@ class Libraries:
             # Quick optimization since lots of times the same address appears
             # many times in a row. We only need to add each address once.
             if address != last_address:
-              lib = self.Lookup(address)
+              lib = self.Lookup(address, sample.get("space", None))
               if lib:
                 lib.AddUnresolvedAddress(address)
                 last_address = address
@@ -302,7 +308,7 @@ def main():
   if args.lookup:
     address_str = args.lookup
     address = int(address_str, 0)
-    lib = libs.Lookup(address)
+    lib = libs.Lookup(address, None)
     if lib:
       lib.Locate()
       print("Address 0x%08x maps to symbol '%s'" % (address, lib.AddressToSymbol(address_str)))

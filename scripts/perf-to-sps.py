@@ -1,4 +1,5 @@
 import json, os, sys, re
+from datetime import datetime
 
 recordline_re = re.compile("(?P<cpu>[0-9]+) (?P<nsec>[0-9]+) 0x[0-9a-f]+ "
                            +"\[0x[0-9a-f]+\]: PERF_RECORD_(?P<name>[A-Z0-9_]+)"
@@ -11,8 +12,14 @@ frame_re = re.compile("\.\.\.\.\. *[0-9]+: (?P<pc>[0-9a-f]+)")
 
 mmaps = {} # pid => "libs" array
 pids = {}  # tid => pid
+maintid = {} # pid => tid
 names = {0: "swapper"} # tid => string
-samples = {} # tid => sample array
+samples = [] # cpu => sample array
+
+def note_thread(pid, tid):
+    pids[tid] = pid
+    if pid not in maintid or maintid[pid] > tid:
+        maintid[pid] = tid
 
 for line in sys.stdin:
     header = recordline_re.match(line)
@@ -22,8 +29,6 @@ for line in sys.stdin:
     if kind == 'MMAP':
         pid, tid = map(int, header.group('thing').split("/"))
         mapinfo_str, name = header.group('rest').split(": ")
-        if name[:2] == "//":
-            continue
         mapinfo = mapinfo_re.match(mapinfo_str)
         if not mapinfo:
             continue
@@ -46,16 +51,18 @@ for line in sys.stdin:
     elif kind == 'FORK':
         ppid, ptid = map(int, header.group('rest').strip("()").split(":"))
         cpid, ctid = map(int, header.group('thing').strip("()").split(":"))
-        pids[ctid] = cpid
-        mmaps[cpid] = mmaps[ppid][:]
+        note_thread(cpid, ctid)
+        if ppid in mmaps:
+            mmaps[cpid] = mmaps[ppid][:]
         names[ctid] = names[ptid]
     elif kind == 'EXIT':
         # Not handling this yet...
         pass
     elif kind == 'SAMPLE':
+        cpu = int(header.group('cpu'))
+        msec = int(header.group('nsec')) / 1e6
         pid, tid = map(int, header.group('rest').split(": ")[0].split("/"))
-        if tid not in pids:
-            pids[tid] = pid
+        note_thread(pid, tid)
         frames = []
         for line in sys.stdin:
             if line == "\n":
@@ -64,24 +71,31 @@ for line in sys.stdin:
             if frame:
                 pc32 = frame.group('pc')[-8:]
                 frames.append({'location': "0x" + pc32})
+        frames.append({ 'location': "%s (in tid %d)" \
+                            % (names.get(tid, "???"), tid) })
+        frames.append({ 'location': "%s (in pid %d)" \
+                            % (names.get(maintid[pid], "???"), pid) })
         frames.reverse()
-        if tid not in samples:
-            samples[tid] = []
-        samples[tid].append({ 'name': names[tid], # ???
-                              'time': int(header.group('nsec')) / 1e6,
+        while cpu >= len(samples):
+            samples.append([])
+        samples[cpu].append({ 'time': msec,
+                              'space': str(pid),
                               'frames': frames })
     else:
         print >>sys.stderr, ("Unhandled %s record" % kind)
 
-for tid in samples:
-    # FIXME: timestamp
-    pid = pids[tid]
-    safename = re.sub("/", ":", names[tid])
-    fname = "_".join(["perf", str(pid), str(tid), safename]) + ".txt"
-    with open(fname, "w") as io:
-        json.dump({ 'libs': json.dumps(mmaps.get(pid, []) + mmaps[-1]),
-                    'threads': [{'samples': samples[tid]}] },
-                  io)
 
-                    
-    
+timestamp = datetime.now().strftime("%H%M")
+with open("perf_%s.txt" % timestamp, "w") as io:
+    libs = mmaps[-1]
+    for pid in mmaps:
+        if pid >= 0:
+            libs += [dict(mmap, space=str(pid))
+                     for mmap in mmaps[pid]
+                     # Drop kernel mappings; kallsyms has them.
+                     if mmap['name'][0] == "/"]
+    json.dump({ 'libs': json.dumps(libs),
+                'threads': [{ 'name': "CPU %d" % cpu,
+                              'samples': samples[cpu]}
+                            for cpu in xrange(len(samples))]},
+              io)
