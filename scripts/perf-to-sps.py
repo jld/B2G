@@ -8,9 +8,36 @@ mapinfo_re = re.compile("\[(?P<addr>0x[0-9a-f]+)\((?P<len>0x[0-9a-f]+)\)"
                         +" @ (?P<offset>[0-9]+|0x[0-9a-f]+)\]")
 frame_re = re.compile("\.\.\.\.\. *[0-9]+: (?P<pc>[0-9a-f]+)")
 
+class AddrSpace:
+    mask = 0xFFFFFFFF
+    bucket = 1 << 24
+    def __init__(self, copy_of = None):
+        self.buckets = { }
+        if copy_of:
+            for i in copy_of.buckets:
+                self.buckets[i] = copy_of.buckets[i][:]
+    def mmap(self, start, end, offset, obj):
+        start = start & AddrSpace.mask
+        end = end & AddrSpace.mask
+        for i in xrange(start / AddrSpace.bucket,
+                        (end - 1) / AddrSpace.bucket + 1):
+            vstart = max(start, i * AddrSpace.bucket)
+            vend = min(end, (i + 1) * AddrSpace.bucket)
+            voffset = offset + vstart - start
+            if i not in self.buckets:
+                self.buckets[i] = []
+            self.buckets[i].append((vstart, vend, voffset, obj))
+    def lookup(self, addr):
+        addr = addr & AddrSpace.mask
+        i = addr / AddrSpace.bucket
+        if i in self.buckets:
+            for (start, end, offset, obj) in reversed(self.buckets[i]):
+                if start <= addr and addr < end:
+                    return (obj, offset + (addr - start))
+        return None
 
 
-mmaps = {} # pid => "libs" array
+spaces = {} # pid => AddrSpace
 pids = {}  # tid => pid
 maintid = {} # pid => tid
 names = {0: "swapper"} # tid => string
@@ -35,14 +62,9 @@ for line in sys.stdin:
         addr = int(mapinfo.group('addr'), 16)
         maplen = int(mapinfo.group('len'), 16)
         offset = int(mapinfo.group('offset'), 16)
-        if pid not in mmaps:
-            mmaps[pid] = []
-        start32 = addr & 0xFFFFFFFF
-        end32 = (addr + maplen) & 0xFFFFFFFF
-        mmaps[pid].append({ 'name': name,
-                            'start': min(start32, end32),
-                            'end': max(start32, end32),
-                            'offset': offset })
+        if pid not in spaces:
+            spaces[pid] = AddrSpace()
+        spaces[pid].mmap(addr, addr + maplen, offset, name)
     elif kind == 'COMM':
         (name, tid) = header.group('rest').rsplit(":", 1)
         tid = int(tid)
@@ -52,8 +74,8 @@ for line in sys.stdin:
         ppid, ptid = map(int, header.group('rest').strip("()").split(":"))
         cpid, ctid = map(int, header.group('thing').strip("()").split(":"))
         note_thread(cpid, ctid)
-        if ppid in mmaps:
-            mmaps[cpid] = mmaps[ppid][:]
+        if ppid in spaces:
+            spaces[cpid] = AddrSpace(spaces[ppid])
         names[ctid] = names[ptid]
     elif kind == 'EXIT':
         # Not handling this yet...
@@ -69,8 +91,13 @@ for line in sys.stdin:
                 break
             frame = frame_re.match(line)
             if frame:
-                pc32 = frame.group('pc')[-8:]
-                frames.append({'location': "0x" + pc32})
+                pc = int(frame.group('pc'), 16)
+                sym = (pid in spaces and spaces[pid].lookup(pc)) \
+                    or spaces[-1].lookup(pc)
+                if sym:
+                    frames.append({'location': "%s:%#x" % sym})
+                else:
+                    frames.append({'location': "%#x" % pc})
         frames.append({ 'location': "%s (in tid %d)" \
                             % (names.get(tid, "???"), tid) })
         frames.append({ 'location': "%s (in pid %d)" \
@@ -79,7 +106,6 @@ for line in sys.stdin:
         while cpu >= len(samples):
             samples.append([])
         samples[cpu].append({ 'time': msec,
-                              'space': str(pid),
                               'frames': frames })
     else:
         print >>sys.stderr, ("Unhandled %s record" % kind)
@@ -87,15 +113,7 @@ for line in sys.stdin:
 
 timestamp = datetime.now().strftime("%H%M")
 with open("perf_%s.txt" % timestamp, "w") as io:
-    libs = mmaps[-1]
-    for pid in mmaps:
-        if pid >= 0:
-            libs += [dict(mmap, space=str(pid))
-                     for mmap in mmaps[pid]
-                     # Drop kernel mappings; kallsyms has them.
-                     if mmap['name'][0] == "/"]
-    json.dump({ 'libs': json.dumps(libs),
-                'threads': [{ 'name': "CPU %d" % cpu,
+    json.dump({ 'threads': [{ 'name': "CPU %d" % cpu,
                               'samples': samples[cpu]}
                             for cpu in xrange(len(samples))]},
               io)
