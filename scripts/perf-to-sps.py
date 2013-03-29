@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 import bisect, json, os, subprocess, sys, re
 from datetime import datetime
 from optparse import OptionParser
@@ -288,10 +289,33 @@ def main():
     op.add_option("-N", "--noisy", dest='clean',
                   default=True, action='store_false',
                   help="don't collapse apparently-corrupt stacks")
+    op.add_option("-p", "--perf", dest='perf', metavar="COMMAND",
+                  default="perf",
+                  help="specify name or path of perf(1) executable")
+    op.add_option("-i", "--input", dest='input', metavar="FILE",
+                  default="perf.data",
+                  help="read perf records from FILE; \"-\" means stdin")
+    op.add_option("-D", "--use-dump", dest='use_dump', action='store_true',
+                  help=("accept input in |perf report -D| text dump format"
+                        + " instead of a binary perf.data file"))
+
     (options, args) = op.parse_args()
 
     record = PerfRecord(options)
-    record.read_dump(sys.stdin)
+    if options.use_dump:
+        if options.input == "-":
+            record.read_dump(sys.stdin)
+        else:
+            with open(options.input) as infile:
+                record.read_dump(infile)
+    else:
+        with open("/dev/null", "w") as devnull:
+            perf = subprocess.Popen([options.perf, "report",
+                                     "-D", "-i", options.input],
+                                    stderr = devnull,
+                                    stdout = subprocess.PIPE)
+        record.read_dump(perf.stdout)
+        perf.communicate()
 
     filename = datetime.now().strftime("perf_%Y%m%d_%H%M%S.txt")
     print >>sys.stderr, "Writing profile to %s" % filename
