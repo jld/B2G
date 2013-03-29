@@ -2,17 +2,17 @@ import bisect, json, os, subprocess, sys, re
 from datetime import datetime
 from optparse import OptionParser
 
-recordline_re = re.compile("(?P<cpu>[0-9]+) (?P<nsec>[0-9]+) 0x[0-9a-f]+ "
-                           +"\[0x[0-9a-f]+\]: PERF_RECORD_(?P<name>[A-Z0-9_]+)"
-                           +"(?P<thing>\(.*?\)|[^:]*): ?(?P<rest>[^ ].*)")
-mapinfo_re = re.compile("\[(?P<addr>0x[0-9a-f]+)\((?P<len>0x[0-9a-f]+)\)"
-                        +" @ (?P<offset>[0-9]+|0x[0-9a-f]+)\]")
-frame_re = re.compile("\.\.\.\.\. *[0-9]+: (?P<pc>[0-9a-f]+)")
-
 OBJDIR_GECKO = os.getenv("OBJDIR_GECKO")
 PRODUCT_OUT = os.getenv("PRODUCT_OUT")
 TARGET_TOOL = os.getenv("TARGET_TOOLS_PREFIX") or ""
 NM = TARGET_TOOL + "nm"
+
+def file_exists(path):
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
 
 class AddrSpace:
     mask = 0xFFFFFFFF
@@ -65,6 +65,7 @@ class SymTab:
             syms.sort()
             self.sym_addrs = map(lambda t: t[0], syms)
             self.syms = syms
+
     def lookup(self, addr):
         i = bisect.bisect(self.sym_addrs, addr)
         if i == 0:
@@ -74,153 +75,179 @@ class SymTab:
             return None
         return (name, mod, addr - base)
 
+    @staticmethod
+    def from_target_path(abspath):
+        path = abspath.lstrip("/")
+        attempts = []
+        if path.startswith("system/b2g/") and OBJDIR_GECKO:
+            attempts.append(os.path.join(OBJDIR_GECKO, "dist/bin",
+                                         path[len("system/b2g/"):]))
+        if PRODUCT_OUT:
+            attempts.append(os.path.join(PRODUCT_OUT, "symbols", path))
+            attempts.append(os.path.join(PRODUCT_OUT, "root", path))
+            attempts.append(os.path.join(PRODUCT_OUT, path))
+        for attempt in filter(file_exists, attempts):
+            ### FIXME: deal with offset!=virtaddr segments.
+            ### Something like this:
+            # phdrs = []
+            # loadcmds = subprocess.Popen([READELF, "-l", attempt], stdout=PIPE)
+            # for line in loadcmds.stdout:
+            #     if not line.startswith("  LOAD "):
+            #         return
+            #     phdrs.append([int(s, 16) for s in line.split()[1:6]])
+            for cmd in [[NM, "-C"], [NM, "-C", "-D"]]:
+                symfh = subprocess.Popen(cmd + [attempt],
+                                         stdout = subprocess.PIPE)
+                tab = SymTab(abspath, symfh.stdout)
+                symfh.communicate()
+                if len(tab.syms) > 0:
+                    return tab
+        return SymTab(abspath)
 
-kallsyms = None
-spaces = {-1: AddrSpace()} # pid => AddrSpace
-pids = {}  # tid => pid
-maintid = {} # pid => tid
-names = {0: "swapper"} # tid => string
-samples = [] # cpu => sample array
-files = {} # path => SymTab
-shortened = {}
-last_short = []
+class PerfRecord:
+    recordline_re = re.compile("(?P<cpu>[0-9]+) (?P<nsec>[0-9]+)"
+                               + " 0x[0-9a-f]+ \[0x[0-9a-f]+\]: "
+                               + "PERF_RECORD_(?P<name>[A-Z0-9_]+)"
+                               + "(?P<thing>\(.*?\)|[^:]*): ?(?P<rest>[^ ].*)")
+    mapinfo_re = re.compile("\[(?P<addr>0x[0-9a-f]+)\((?P<len>0x[0-9a-f]+)\)"
+                            +" @ (?P<offset>[0-9]+|0x[0-9a-f]+)\]")
+    frame_re = re.compile("\.\.\.\.\. *[0-9]+: (?P<pc>[0-9a-f]+)")
 
-op = OptionParser()
-op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
-              help="read kernel symbols (in /proc/kallsyms format) from FILE")
-op.add_option("-N", "--noisy", dest='clean',
-              default=True, action='store_false',
-              help="don't collapse apparently-corrupt stacks")
-(options, args) = op.parse_args()
+    def __init__(self, options):
+        self.options = options
+        self.spaces = {-1: AddrSpace()} # pid => space
+        self.pids = {}  # tid => pid
+        self.maintid = {} # pid => tid
+        self.names = {0: "swapper"} # tid => string
+        self.samples = [] # cpu => sample array
+        self.files = {} # path => SymTab
+        self.shortened = {} # long => short
+        self.last_short = [] # counter, as list of chars
+        if options.kallsyms:
+            with file(options.kallsyms) as ksfile:
+                self.kallsyms = SymTab("[kernel]", ksfile, kallsyms = True)
+        else:
+            self.kallsyms = None
 
-if options.kallsyms:
-    with file(options.kallsyms) as ksfile:
-        kallsyms = SymTab("[kernel]", ksfile, kallsyms = True)
+    def note_thread(self, pid, tid):
+        self.pids[tid] = pid
+        if pid not in self.maintid or self.maintid[pid] > tid:
+            self.maintid[pid] = tid
 
-def exists(path):
-    try:
-        os.stat(path)
-        return True
-    except OSError:
-        return False
+    def shorten(self, longname):
+        if longname not in self.shortened:
+            self._inc_shorten()
+            self.shortened[longname] = "".join(self.last_short)
+        return self.shortened[longname]
 
-def get_symbols(abspath):
-    path = abspath.lstrip("/")
-    attempts = []
-    if path.startswith("system/b2g/") and OBJDIR_GECKO:
-        attempts.append(os.path.join(OBJDIR_GECKO, "dist/bin",
-                                     path[len("system/b2g/"):]))
-    if PRODUCT_OUT:
-        attempts.append(os.path.join(PRODUCT_OUT, "symbols", path))
-        attempts.append(os.path.join(PRODUCT_OUT, "root", path))
-        attempts.append(os.path.join(PRODUCT_OUT, path))
-    for attempt in filter(exists, attempts):
-        ### FIXME: deal with offset!=virtaddr segments.
-        ### Something like this:
-        # phdrs = []
-        # with subprocess.Popen(READELF, "-l", attempt) as loadfh:
-        #     for line in loadfh:
-        #         if not line.startswith("  LOAD "):
-        #             continue
-        #         phdrs.append([int(s, 16) for s in line.split()[1:6]])
-        for cmd in [[NM, "-C"], [NM, "-C", "-D"]]:
-            symfh = subprocess.Popen(cmd + [attempt],
-                                     stdout = subprocess.PIPE)
-            tab = SymTab(abspath, symfh.stdout)
-            symfh.communicate()
-            if len(tab.syms) > 0:
-                return tab
-    return SymTab(abspath)
-
-def note_thread(pid, tid):
-    pids[tid] = pid
-    if pid not in maintid or maintid[pid] > tid:
-        maintid[pid] = tid
-
-def shorten(longname):
-    if longname not in shortened:
-        inc_shorten()
-        shortened[longname] = "".join(last_short)
-    return shortened[longname]
-
-def inc_shorten():
-    for i in xrange(len(last_short)):
-        n = ord(last_short[i])
-        if n < 126:
-            n = n + 1
-            if n == 34 or n == 92:
+    def _inc_shorten(self):
+        for i in xrange(len(self.last_short)):
+            n = ord(self.last_short[i])
+            if n < 126:
                 n = n + 1
-            last_short[i] = chr(n)
-            return
-        last_short[i] = chr(33)
-    last_short.append(chr(33))
+                if n == 34 or n == 92:
+                    n = n + 1
+                self.last_short[i] = chr(n)
+                return
+            self.last_short[i] = chr(33)
+        self.last_short.append(chr(33))
 
-for line in sys.stdin:
-    header = recordline_re.match(line)
-    if not header:
-        continue
-    kind = header.group('name')
-    if kind == 'MMAP':
+    def read_dump(self, fh):
+        for line in fh:
+            header = PerfRecord.recordline_re.match(line)
+            if header:
+                self.handle_record(fh, header)
+
+    def handle_record(self, fh, header):
+        kind = header.group('name')
+        if kind == 'MMAP':
+            self.handle_mmap(header)
+        elif kind == 'COMM':
+            self.handle_comm(header)
+        elif kind == 'FORK':
+            self.handle_fork(header)
+        elif kind == 'EXIT':
+            # Not handling this yet...
+            pass
+        elif kind == 'SAMPLE':
+            self.handle_sample(fh, header)
+        else:
+            print >>sys.stderr, ("Unhandled %s record" % kind)
+
+    def handle_mmap(self, header):
         pid, tid = map(int, header.group('thing').split("/"))
         mapinfo_str, name = header.group('rest').split(": ")
-        mapinfo = mapinfo_re.match(mapinfo_str)
+        mapinfo = PerfRecord.mapinfo_re.match(mapinfo_str)
         if not mapinfo:
-            continue
+            return
         addr = int(mapinfo.group('addr'), 16)
         maplen = int(mapinfo.group('len'), 16)
         offset = int(mapinfo.group('offset'), 16)
         if pid == -1:
             # We're going to use kallsyms.
-            if not kallsyms:
-                continue
+            if not self.kallsyms:
+                return
             if name.startswith("[kernel."):
-                # This entry is just weird; do hacks to it.
-                # (Needs fixed to exclude modules.)
-                addr = kallsyms.sym_addrs[0]
-                maplen = kallsyms.sym_addrs[-1] - addr
+                # The kernel-only entry covers the entire kernel
+                # space; restrict it to just where there are symbols.
+                # Note that there will be _etext/_einittext at the end
+                # of the text, so using the start of the last symbol
+                # is safe.
+                #
+                # This should exclude modules, since they're mapped
+                # separately, but doesn't yet; it's harmless as long
+                # as they're recorded after the kernel entry, since
+                # they'll override it in the AddrSpace, but could make
+                # things slightly more efficient -- and might avoid
+                # falsely matching corrupt addresses in the space
+                # between the kernel and modules.  So, FIXME.
+                addr = self.kallsyms.sym_addrs[0]
+                maplen = self.kallsyms.sym_addrs[-1] - addr
             offset = addr
-            symtab = kallsyms
+            symtab = self.kallsyms
         else:
-            if name not in files:
-                files[name] = get_symbols(name) 
-            symtab = files[name]
-        if pid not in spaces:
-            spaces[pid] = AddrSpace()
-        print "Mapping pid %d addr %#x len %#x offset %#x thing %s" % \
-            (pid, addr, maplen, offset, symtab.name)
-        spaces[pid].mmap(addr, addr + maplen, offset, symtab)
-    elif kind == 'COMM':
+            if name not in self.files:
+                if name[:1] == "/" and name[:2] != "//":
+                    self.files[name] = SymTab.from_target_path(name)
+                else:
+                    self.files[name] = SymTab(name)
+            symtab = self.files[name]
+        if pid not in self.spaces:
+            self.spaces[pid] = AddrSpace()
+        self.spaces[pid].mmap(addr, addr + maplen, offset, symtab)
+
+    def handle_comm(self, header):
         (name, tid) = header.group('rest').rsplit(":", 1)
         tid = int(tid)
-        names[tid] = name
+        self.names[tid] = name
         # FIXME: how do we distinguish an exec from a thread name change?
-    elif kind == 'FORK':
+
+    def handle_fork(self, header):
         ppid, ptid = map(int, header.group('rest').strip("()").split(":"))
         cpid, ctid = map(int, header.group('thing').strip("()").split(":"))
-        note_thread(cpid, ctid)
-        if ppid in spaces:
-            spaces[cpid] = AddrSpace(spaces[ppid])
-        names[ctid] = names[ptid]
-    elif kind == 'EXIT':
-        # Not handling this yet...
-        pass
-    elif kind == 'SAMPLE':
+        self.note_thread(cpid, ctid)
+        if ppid in self.spaces:
+            self.spaces[cpid] = AddrSpace(self.spaces[ppid])
+        self.names[ctid] = self.names[ptid]
+
+    def handle_sample(self, fh, header):
         cpu = int(header.group('cpu'))
         msec = int(header.group('nsec')) / 1e6
         pid, tid = map(int, header.group('rest').split(": ")[0].split("/"))
-        note_thread(pid, tid)
+        self.note_thread(pid, tid)
         frames = []
-        for line in sys.stdin:
+        for line in fh:
             if line == "\n":
                 break
-            frame = frame_re.match(line)
+            frame = PerfRecord.frame_re.match(line)
             if frame:
                 pc = int(frame.group('pc'), 16)
                 # What are these addresses doing at the top of the stack?
                 if pc >= 0xfffffffff000:
                     continue
-                fileinfo = (pid in spaces and spaces[pid].lookup(pc)) \
-                    or spaces[-1].lookup(pc)
+                fileinfo = ((pid in self.spaces and
+                             self.spaces[pid].lookup(pc)) or
+                            self.spaces[-1].lookup(pc))
                 if fileinfo:
                     symtab, offset = fileinfo
                     syminfo = symtab.lookup(offset)
@@ -231,24 +258,45 @@ for line in sys.stdin:
                         frames.append("%#x (in %s)" % (offset, symtab.name))
                 else:
                     frames.append("%#x" % pc)
-        if options.clean and all(" (in " not in f for f in frames):
+        if self.options.clean and all(" (in " not in f for f in frames):
             frames = ["Corrupt Stack"]
-        frames.append("%s (in tid %d)" % (names.get(tid, "???"), tid))
-        frames.append("%s (in pid %d)" % (names.get(maintid[pid], "???"), pid))
+        frames.append("%s (in tid %d)"
+                      % (self.names.get(tid, "???"), tid))
+        frames.append("%s (in pid %d)"
+                      % (self.names.get(self.maintid[pid], "???"), pid))
         frames.reverse()
-        while cpu >= len(samples):
-            samples.append([])
-        samples[cpu].append({ 'time': msec,
-                              'frames': map(shorten, frames) })
-    else:
-        print >>sys.stderr, ("Unhandled %s record" % kind)
+        while cpu >= len(self.samples):
+            self.samples.append([])
+        self.samples[cpu].append({ 'time': msec,
+                              'frames': map(self.shorten, frames) })
 
-timestamp = datetime.now().strftime("%H%M")
-with open("perf_%s.txt" % timestamp, "w") as io:
-    json.dump({ 'format': 'profileJSONWithSymbolicationTable,1',
-                'profileJSON': { 'threads': [{ 'name': "CPU %d" % cpu,
-                                              'samples': samples[cpu]}
-                                             for cpu in xrange(len(samples))]},
-                'symbolicationTable': dict((shortened[l], l) for l in shortened)
-                }, 
-              io, separators = (',', ':'))
+    def write_json(self, fh):
+        profile = { 'threads': [{ 'name': "CPU %d" % cpu,
+                                  'samples': self.samples[cpu] }
+                                for cpu in xrange(len(self.samples))] }
+        unshorten = dict((self.shortened[l], l) for l in self.shortened)
+        json.dump({ 'format': 'profileJSONWithSymbolicationTable,1',
+                    'profileJSON': profile,
+                    'symbolicationTable': unshorten },
+                  fh, separators = (',', ':'))
+
+def main():
+    op = OptionParser()
+    op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
+                  help=("read kernel symbols (in /proc/kallsyms format)"
+                        + " from FILE"))
+    op.add_option("-N", "--noisy", dest='clean',
+                  default=True, action='store_false',
+                  help="don't collapse apparently-corrupt stacks")
+    (options, args) = op.parse_args()
+
+    record = PerfRecord(options)
+    record.read_dump(sys.stdin)
+
+    filename = datetime.now().strftime("perf_%Y%m%d_%H%M%S.txt")
+    print >>sys.stderr, "Writing profile to %s" % filename
+    with open(filename, "w") as outfile:
+        record.write_json(outfile)
+
+if __name__ == '__main__':
+    main()
