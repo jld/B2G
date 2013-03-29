@@ -86,6 +86,9 @@ files = {} # path => SymTab
 op = OptionParser()
 op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
               help="read kernel symbols (in /proc/kallsyms format) from FILE")
+op.add_option("-N", "--noisy", dest='clean',
+              default=True, action='store_false',
+              help="don't collapse apparently-corrupt stacks")
 (options, args) = op.parse_args()
 
 if options.kallsyms:
@@ -193,6 +196,9 @@ for line in sys.stdin:
             frame = frame_re.match(line)
             if frame:
                 pc = int(frame.group('pc'), 16)
+                # What are these addresses doing at the top of the stack?
+                if pc >= 0xfffffffff000:
+                    continue
                 fileinfo = (pid in spaces and spaces[pid].lookup(pc)) \
                     or spaces[-1].lookup(pc)
                 if fileinfo:
@@ -205,6 +211,8 @@ for line in sys.stdin:
                         frames.append("%#x (in %s)" % (offset, symtab.name))
                 else:
                     frames.append("%#x" % pc)
+        if options.clean and all(" (in " not in f for f in frames):
+            frames = ["Corrupt Stack"]
         frames.append({ 'location': "%s (in tid %d)" \
                             % (names.get(tid, "???"), tid) })
         frames.append({ 'location': "%s (in pid %d)" \
