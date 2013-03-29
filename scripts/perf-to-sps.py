@@ -83,7 +83,7 @@ names = {0: "swapper"} # tid => string
 samples = [] # cpu => sample array
 files = {} # path => SymTab
 shortened = {}
-symctr = 0
+last_short = []
 
 op = OptionParser()
 op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
@@ -138,12 +138,22 @@ def note_thread(pid, tid):
         maintid[pid] = tid
 
 def shorten(longname):
-    global symctr
     if longname not in shortened:
-        short = "%X" % symctr
-        symctr = symctr + 1
-        shortened[longname] = short
+        inc_shorten()
+        shortened[longname] = "".join(last_short)
     return shortened[longname]
+
+def inc_shorten():
+    for i in xrange(len(last_short)):
+        n = ord(last_short[i])
+        if n < 126:
+            n = n + 1
+            if n == 34 or n == 92:
+                n = n + 1
+            last_short[i] = chr(n)
+            return
+        last_short[i] = chr(33)
+    last_short.append(chr(33))
 
 for line in sys.stdin:
     header = recordline_re.match(line)
