@@ -82,6 +82,8 @@ maintid = {} # pid => tid
 names = {0: "swapper"} # tid => string
 samples = [] # cpu => sample array
 files = {} # path => SymTab
+shortened = {}
+symctr = 0
 
 op = OptionParser()
 op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
@@ -134,6 +136,14 @@ def note_thread(pid, tid):
     pids[tid] = pid
     if pid not in maintid or maintid[pid] > tid:
         maintid[pid] = tid
+
+def shorten(longname):
+    global symctr
+    if longname not in shortened:
+        short = "%X" % symctr
+        symctr = symctr + 1
+        shortened[longname] = short
+    return shortened[longname]
 
 for line in sys.stdin:
     header = recordline_re.match(line)
@@ -213,21 +223,22 @@ for line in sys.stdin:
                     frames.append("%#x" % pc)
         if options.clean and all(" (in " not in f for f in frames):
             frames = ["Corrupt Stack"]
-        frames.append({ 'location': "%s (in tid %d)" \
-                            % (names.get(tid, "???"), tid) })
-        frames.append({ 'location': "%s (in pid %d)" \
-                            % (names.get(maintid[pid], "???"), pid) })
+        frames.append("%s (in tid %d)" % (names.get(tid, "???"), tid))
+        frames.append("%s (in pid %d)" % (names.get(maintid[pid], "???"), pid))
         frames.reverse()
         while cpu >= len(samples):
             samples.append([])
         samples[cpu].append({ 'time': msec,
-                              'frames': frames })
+                              'frames': map(shorten, frames) })
     else:
         print >>sys.stderr, ("Unhandled %s record" % kind)
 
 timestamp = datetime.now().strftime("%H%M")
 with open("perf_%s.txt" % timestamp, "w") as io:
-    json.dump({ 'threads': [{ 'name': "CPU %d" % cpu,
-                              'samples': samples[cpu]}
-                            for cpu in xrange(len(samples))]},
-              io)
+    json.dump({ 'format': 'profileJSONWithSymbolicationTable,1',
+                'profileJSON': { 'threads': [{ 'name': "CPU %d" % cpu,
+                                              'samples': samples[cpu]}
+                                             for cpu in xrange(len(samples))]},
+                'symbolicationTable': dict((shortened[l], l) for l in shortened)
+                }, 
+              io, separators = (',', ':'))
