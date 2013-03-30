@@ -3,6 +3,18 @@ import bisect, json, os, subprocess, sys, re, threading
 from datetime import datetime
 from optparse import OptionParser
 
+# Constants from include/uapi/linux/perf_event.h:
+def to_u64(x):
+    return x & 0xFFFFFFFFFFFFFFFF
+PERF_CONTEXT_HV           = to_u64(-32)
+PERF_CONTEXT_KERNEL       = to_u64(-128)
+PERF_CONTEXT_USER         = to_u64(-512)
+PERF_CONTEXT_GUEST        = to_u64(-2048)
+PERF_CONTEXT_GUEST_KERNEL = to_u64(-2176)
+PERF_CONTEXT_GUEST_USER   = to_u64(-2560)
+PERF_CONTEXT_MAX          = to_u64(-4095)
+
+
 GECKO_OBJDIR = os.getenv("GECKO_OBJDIR")
 PRODUCT_OUT = os.getenv("PRODUCT_OUT")
 TARGET_TOOL = os.getenv("TARGET_TOOLS_PREFIX") or ""
@@ -241,18 +253,30 @@ class PerfRecord:
         pid, tid = map(int, header.group('rest').split(": ")[0].split("/"))
         self.note_thread(pid, tid)
         frames = []
+        context = None
         for line in fh:
             if line == "\n":
                 break
             frame = PerfRecord.frame_re.match(line)
             if frame:
                 pc = int(frame.group('pc'), 16)
-                # What are these addresses doing at the top of the stack?
-                if pc >= 0xfffffffff000:
+                if pc >= PERF_CONTEXT_MAX:
+                    context = pc
                     continue
-                fileinfo = ((pid in self.spaces and
-                             self.spaces[pid].lookup(pc)) or
-                            self.spaces[-1].lookup(pc))
+                if context == PERF_CONTEXT_USER:
+                    space = self.spaces.get(pid, None)
+                elif context == PERF_CONTEXT_KERNEL:
+                    space = self.spaces[-1]
+                else:
+                    if context:
+                        print >>sys.stderr, \
+                            ("warning: unknown frame context (__u64)%d"
+                             % (context - (1 << 64)))
+                    else:
+                        print >>sys.stderr, \
+                            "warning: frame with no context" % pc
+                    space = None
+                fileinfo = space and space.lookup(pc)
                 if fileinfo:
                     symtab, offset = fileinfo
                     syminfo = symtab.lookup(offset)
@@ -262,29 +286,21 @@ class PerfRecord:
                     else:
                         frames.append("%#x (in %s)" % (offset, symtab.name))
                 else:
-                    frames.append("%#x" % pc)
-
+                    # If the address wasn't even mapped, it's probably junk.
+                    if self.options.clean:
+                        continue
+                    else:
+                        frames.append("%#x" % pc)
+        # Post-processing:
         if self.options.clean:
-            usertop = 0
-            for i in reversed(xrange(len(frames))):
-                if " (in [kernel" in frames[i]:
-                    usertop = i + 1
-                    break
-            # If all the "user" frames were wild, assume garbage
-            # Exception: a non-empty kernel-only stack
-            if (usertop != len(frames) or usertop == 0) and \
-                    all(" (in " not in f for f in frames[usertop:]):
-                # Assume any unresolved kernel addresses are also bad.
-                # Sadly, there may also be garbage that landed on a symbol.
-                if self.kallsyms:
-                    while usertop > 0 and frames[usertop - 1].startswith("0x"):
-                        usertop -= 1
-                frames[usertop:] = ["Corrupt Stack"]
-            # pthread_create always has a false parent
-            if len(frames) - usertop >= 2 \
+            # Make empty stacks stand out & not be self samples on the root.
+            if len(frames) == 0:
+                frames = ["Corrupt Stack"]
+            # pthread_create, in the child, has a false caller that varies.
+            # In the parent, we assume it can't be the second-lowest frame.
+            if len(frames) >= 2 \
                     and frames[-2].startswith("pthread_create "):
                 frames[-1:] = []
-
         frames.append("%s (in tid %d)"
                       % (self.names.get(tid, "???"), tid))
         frames.append("%s (in pid %d)"
