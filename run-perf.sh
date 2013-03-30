@@ -4,7 +4,7 @@ set -e
 . "$B2G_DIR/load-config.sh"
 set -u
 
-# FIXME, for real: make this path explicit
+PATH=$PATH:$B2G_DIR/out/host/linux-x86/bin
 : ${ADB:=adb}
 : ${PRODUCT_OUT:=$B2G_DIR/out/target/product/$DEVICE}
 : ${TARGET_TRIPLE:=arm-linux-androideabi}
@@ -79,6 +79,20 @@ case $1 in
 	    echo "$proc1_info" > "$bootstamp"
 	    "$ADB" pull /proc/kallsyms "$perftmp"/
 	fi
+	;;
+
+    sps)
+	shift
+	export GECKO_OBJDIR PRODUCT_OUT
+	"$B2G_DIR/scripts/perf-to-sps.py" \
+	    --perf "$host_perf" --kallsyms "$kallsyms" \
+	    -i "$perftmp/perf.data" "$@"
+	;;
+
+    record-sps)
+	shift
+	"$0" record -a -g "$@"
+	"$0" sps
 	;;
 
     *)

@@ -66,6 +66,9 @@ class SymTab:
             syms.sort()
             self.sym_addrs = map(lambda t: t[0], syms)
             self.syms = syms
+        else:
+            self.syms = []
+            self.sym_addrs = []
 
     def lookup(self, addr):
         i = bisect.bisect(self.sym_addrs, addr)
@@ -103,6 +106,7 @@ class SymTab:
                 symfh.communicate()
                 if len(tab.syms) > 0:
                     return tab
+        print >>sys.stderr, "warning: no file found for %s" % abspath
         return SymTab(abspath)
 
 class PerfRecord:
@@ -310,7 +314,6 @@ def main():
                 record.read_dump(infile)
     else:
         command = [options.perf, "report", "-D", "-i", options.input]
-        print >>sys.stderr, "+ " + " ".join(command)
         perf = subprocess.Popen(command,
                                 stdout = subprocess.PIPE,
                                 stderr = subprocess.PIPE)
@@ -324,6 +327,7 @@ def main():
         errthread.join()
         perf.communicate()
         if perf.returncode != 0:
+            print >>sys.stderr, "+ " + " ".join(command)
             if len(errbuf) > 0 and errbuf[-1][-1:] != "\n":
                 errbuf[-1] += "\n"
             for line in errbuf:
