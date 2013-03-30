@@ -6,7 +6,7 @@ set -u
 
 # FIXME, for real: make this path explicit
 : ${ADB:=adb}
-: ${GONK_OBJDIR:=$B2G_DIR/out/target/product/$DEVICE}
+: ${PRODUCT_OUT:=$B2G_DIR/out/target/product/$DEVICE}
 : ${TARGET_TRIPLE:=arm-linux-androideabi}
 # FIXME: do this in a less bad way
 case $(uname -ms) in
@@ -18,7 +18,7 @@ esac
 host_perf=$B2G_DIR/prebuilt/alt-toolchain/perf/$HOST_TRIPLE-perf
 target_perf=$B2G_DIR/prebuilt/alt-toolchain/perf/$TARGET_TRIPLE-perf
 
-perftmp=$GONK_OBJDIR/perf.tmp
+perftmp=$PRODUCT_OUT/perf.tmp
 mkdir -p "$perftmp"
 symfs=$perftmp/symfs
 kallsyms=$perftmp/kallsyms
@@ -30,7 +30,7 @@ case $1 in
 	if ! [ -d "$symfs" ]; then
 	    # FIXME: need a way to clobber this when it's stale
 	    mkdir "$symfs"
-	    (   cd "$GONK_OBJDIR/"
+	    (   cd "$PRODUCT_OUT/"
 		find system -type f -print
 		cd root
 		find . -type f -print
@@ -38,8 +38,8 @@ case $1 in
 		echo "Making symfs link for $item" >&2
 		mkdir -p "$symfs/${item%/*}"
 		gecko_src=$GECKO_OBJDIR/dist/bin/${item#system/b2g/}
-		symbol_src=$GONK_OBJDIR/symbols/$item
-		stripped_src=$GONK_OBJDIR/$item
+		symbol_src=$PRODUCT_OUT/symbols/$item
+		stripped_src=$PRODUCT_OUT/$item
 		if [ -e "$gecko_src" ]; then
 		    ln -ns "$gecko_src" "$symfs/$item"
 		elif [ -e "$symbol_src" ]; then

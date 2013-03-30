@@ -3,7 +3,7 @@ import bisect, json, os, subprocess, sys, re, threading
 from datetime import datetime
 from optparse import OptionParser
 
-OBJDIR_GECKO = os.getenv("OBJDIR_GECKO")
+GECKO_OBJDIR = os.getenv("GECKO_OBJDIR")
 PRODUCT_OUT = os.getenv("PRODUCT_OUT")
 TARGET_TOOL = os.getenv("TARGET_TOOLS_PREFIX") or ""
 NM = TARGET_TOOL + "nm"
@@ -80,8 +80,8 @@ class SymTab:
     def from_target_path(abspath):
         path = abspath.lstrip("/")
         attempts = []
-        if path.startswith("system/b2g/") and OBJDIR_GECKO:
-            attempts.append(os.path.join(OBJDIR_GECKO, "dist/bin",
+        if path.startswith("system/b2g/") and GECKO_OBJDIR:
+            attempts.append(os.path.join(GECKO_OBJDIR, "dist/bin",
                                          path[len("system/b2g/"):]))
         if PRODUCT_OUT:
             attempts.append(os.path.join(PRODUCT_OUT, "symbols", path))
