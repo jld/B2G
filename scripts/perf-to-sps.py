@@ -263,8 +263,28 @@ class PerfRecord:
                         frames.append("%#x (in %s)" % (offset, symtab.name))
                 else:
                     frames.append("%#x" % pc)
-        if self.options.clean and all(" (in " not in f for f in frames):
-            frames = ["Corrupt Stack"]
+
+        if self.options.clean:
+            usertop = 0
+            for i in reversed(xrange(len(frames))):
+                if " (in [kernel" in frames[i]:
+                    usertop = i + 1
+                    break
+            # If all the "user" frames were wild, assume garbage
+            # Exception: a non-empty kernel-only stack
+            if (usertop != len(frames) or usertop == 0) and \
+                    all(" (in " not in f for f in frames[usertop:]):
+                # Assume any unresolved kernel addresses are also bad.
+                # Sadly, there may also be garbage that landed on a symbol.
+                if self.kallsyms:
+                    while usertop > 0 and frames[usertop - 1].startswith("0x"):
+                        usertop -= 1
+                frames[usertop:] = ["Corrupt Stack"]
+            # pthread_create always has a false parent
+            if len(frames) - usertop >= 2 \
+                    and frames[-2].startswith("pthread_create "):
+                frames[-1:] = []
+
         frames.append("%s (in tid %d)"
                       % (self.names.get(tid, "???"), tid))
         frames.append("%s (in pid %d)"
@@ -322,6 +342,7 @@ def main():
             for line in perf.stderr:
                 errbuf.append(line)
         errthread = threading.Thread(target = errloop)
+        errthread.daemon = True
         errthread.start()
         record.read_dump(perf.stdout)
         errthread.join()
