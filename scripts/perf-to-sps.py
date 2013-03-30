@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-import bisect, json, os, subprocess, sys, re
+import bisect, json, os, subprocess, sys, re, threading
 from datetime import datetime
 from optparse import OptionParser
 
@@ -309,18 +309,34 @@ def main():
             with open(options.input) as infile:
                 record.read_dump(infile)
     else:
-        with open("/dev/null", "w") as devnull:
-            perf = subprocess.Popen([options.perf, "report",
-                                     "-D", "-i", options.input],
-                                    stderr = devnull,
-                                    stdout = subprocess.PIPE)
+        command = [options.perf, "report", "-D", "-i", options.input]
+        print >>sys.stderr, "+ " + " ".join(command)
+        perf = subprocess.Popen(command,
+                                stdout = subprocess.PIPE,
+                                stderr = subprocess.PIPE)
+        errbuf = []
+        def errloop():
+            for line in perf.stderr:
+                errbuf.append(line)
+        errthread = threading.Thread(target = errloop)
+        errthread.start()
         record.read_dump(perf.stdout)
+        errthread.join()
         perf.communicate()
+        if perf.returncode != 0:
+            if len(errbuf) > 0 and errbuf[-1][-1:] != "\n":
+                errbuf[-1] += "\n"
+            for line in errbuf:
+                sys.stderr.write(line)
+            print >>sys.stderr, ("perf exited with status %d"
+                                 % perf.returncode)
+            return 1
 
     filename = datetime.now().strftime("perf_%Y%m%d_%H%M%S.txt")
     print >>sys.stderr, "Writing profile to %s" % filename
     with open(filename, "w") as outfile:
         record.write_json(outfile)
+    return 0
 
 if __name__ == '__main__':
-    main()
+    exit(main())
