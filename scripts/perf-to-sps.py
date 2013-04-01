@@ -19,6 +19,7 @@ GECKO_OBJDIR = os.getenv("GECKO_OBJDIR")
 PRODUCT_OUT = os.getenv("PRODUCT_OUT")
 TARGET_TOOL = os.getenv("TARGET_TOOLS_PREFIX") or ""
 NM = TARGET_TOOL + "nm"
+READELF = TARGET_TOOL + "readelf"
 
 def file_exists(path):
     try:
@@ -58,22 +59,37 @@ class AddrSpace:
 class SymTab:
     nm_re = re.compile("(?P<addr>[0-9a-fA-f ]+) (?P<type>[A-Za-z])"
                        + " (?P<name>.*)")
-    def __init__(self, objname, nmfile = None, kallsyms = False):
+    def __init__(self, objname, nmfile = None,
+                 kallsyms = False, addrmap = None):
+        def map_addr(addr):
+            for (vbase, size, fbase) in addrmap:
+                if vbase <= addr and addr < vbase + size:
+                    return addr - vbase + fbase
+            return None
+
         self.name = objname
         if nmfile:
             syms = []
             for line in nmfile:
                 fields = SymTab.nm_re.match(line)
                 addr, kind, name = fields.group('addr', 'type', 'name')
-                if " " in addr or name[0] == "$":
+                if " " in addr:
                     continue
                 addr = int(addr, 16)
+                if addrmap:
+                    addr = map_addr(addr)
+                    if addr == None:
+                        continue
                 if kallsyms:
                     name = name.split("\t", 1)
                     mod = name[1] if len(name) > 1 else objname
                     name = name[0]
                 else:
                     mod = objname
+                # I'm not sure what these are, but we don't want them.
+                if name[-2:-1] == "$":
+                    continue
+                # FIXME: also suppress aliases
                 syms.append((addr, kind, name, mod))
             syms.sort()
             self.sym_addrs = map(lambda t: t[0], syms)
@@ -103,18 +119,23 @@ class SymTab:
             attempts.append(os.path.join(PRODUCT_OUT, "root", path))
             attempts.append(os.path.join(PRODUCT_OUT, path))
         for attempt in filter(file_exists, attempts):
-            ### FIXME: deal with offset!=virtaddr segments.
-            ### Something like this:
-            # phdrs = []
-            # loadcmds = subprocess.Popen([READELF, "-l", attempt], stdout=PIPE)
-            # for line in loadcmds.stdout:
-            #     if not line.startswith("  LOAD "):
-            #         return
-            #     phdrs.append([int(s, 16) for s in line.split()[1:6]])
+            loadcmds = []
+            readelf = subprocess.Popen([READELF, "-l", attempt],
+                                       stdout = subprocess.PIPE)
+            for line in readelf.stdout:
+                if not line.startswith("  LOAD "):
+                    continue
+                fields = line.split()[1:]
+                if len(fields) < 5:
+                    # Future-proof against 64-bit
+                    fields += readelf.stdout.readline().split()
+                offset, virtaddr, physaddr, filesize, memsize = \
+                    (int(s, 16) for s in fields[:5])
+                loadcmds.append((virtaddr, filesize, offset))
             for cmd in [[NM, "-C"], [NM, "-C", "-D"]]:
                 symfh = subprocess.Popen(cmd + [attempt],
                                          stdout = subprocess.PIPE)
-                tab = SymTab(abspath, symfh.stdout)
+                tab = SymTab(abspath, symfh.stdout, addrmap = loadcmds)
                 symfh.communicate()
                 if len(tab.syms) > 0:
                     return tab
