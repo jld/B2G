@@ -170,7 +170,9 @@ class PerfRecord:
     def note_thread(self, pid, tid):
         self.pids[tid] = pid
         if pid not in self.maintid or self.maintid[pid] > tid:
-            self.maintid[pid] = tid
+            # Apparently we can get samples with tid 0 and a real pid?
+            if tid != 0 or pid == 0:
+                self.maintid[pid] = tid
 
     def shorten(self, longname):
         if longname not in self.shortened:
