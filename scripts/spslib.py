@@ -73,6 +73,27 @@ class SPS:
             things[-1:] = []
         return map(self.__class__, things)
 
+    def invert(self, div=None, pidwash=True):
+        acc = {}
+        idr = re.compile("(.*) \(in ([pt]id) \d+\)")
+        for sample in self.samples:
+            dur = sample['duration']
+            frames = sample['frames']
+            recur = {}
+            for i in xrange(len(frames)):
+                frame = frames[i]
+                level = recur.get(frame, 0)
+                recur[frame] = level + 1
+                m = pidwash and i < 2 and idr.match(frame)
+                if m:
+                    frame = "%s (%s)" % m.groups()
+                k = (frame, level)
+                acc[k] = acc.get(k, 0) + dur
+        if div:
+            for k in acc:
+                acc[k] /= div
+        return acc
+
     def mainthread(self, pname = "b2g"):
         acc = []
         pre = re.compile("%s \(in pid (?P<pid>\d+)\)" % pname)
@@ -86,5 +107,10 @@ class SPS:
         return self.__class__(acc)
 
     def paints(self):
-        return self.groups("nsRefreshDriver::Notify", "PresShell::Paint")
-    
+        return self.group("nsRefreshDriver::Notify", "PresShell::Paint")
+
+def dsub(dl, dr):
+    diff = dict(dl)
+    for k in dr:
+        diff[k] = diff.get(k, 0) - dr[k]
+    return diff
