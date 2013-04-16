@@ -166,6 +166,7 @@ class PerfRecord:
                 self.kallsyms = SymTab("[kernel]", ksfile, kallsyms = True)
         else:
             self.kallsyms = None
+        self.jsallsyms = {}
 
     def note_thread(self, pid, tid):
         self.pids[tid] = pid
@@ -197,6 +198,24 @@ class PerfRecord:
             header = PerfRecord.recordline_re.match(line)
             if header:
                 self.handle_record(fh, header)
+
+    def _read_jsallsyms(self, pid):
+        if not self.options.jsallsyms:
+            return None
+        path = "%s/jsallsyms-%d" % (self.options.jsallsyms, pid)
+        if not file_exists(path):
+            return None
+        with open(path) as fh:
+            tab = SymTab("JS in pid %d" % pid, nmfile = fh, kallsyms = True)
+            if tab.syms:
+                return tab
+            else:
+                return None
+
+    def get_jsallsyms(self, pid):
+        if pid not in self.jsallsyms:
+            self.jsallsyms[pid] = self._read_jsallsyms(pid)
+        return self.jsallsyms[pid]
 
     def handle_record(self, fh, header):
         kind = header.group('name')
@@ -254,6 +273,10 @@ class PerfRecord:
             symtab = self.files[name]
         if pid not in self.spaces:
             self.spaces[pid] = AddrSpace()
+            js = self.get_jsallsyms(pid)
+            if js:
+                self.spaces[pid].mmap(js.sym_addrs[0], js.sym_addrs[-1] + 1,
+                                      js.sym_addrs[0], js)
         self.spaces[pid].mmap(addr, addr + maplen, offset, symtab)
 
     def handle_comm(self, header):
@@ -349,6 +372,8 @@ def main():
     op.add_option("-k", "--kallsyms", dest='kallsyms', metavar="FILE",
                   help=("read kernel symbols (in /proc/kallsyms format)"
                         + " from FILE"))
+    op.add_option("-j", "--jsallsyms-dir", dest='jsallsyms', metavar="DIR",
+                  help=("read JavaScript pseudo-symbols from files in DIR"))
     op.add_option("-N", "--noisy", dest='clean',
                   default=True, action='store_false',
                   help="don't collapse apparently-corrupt stacks")
