@@ -149,7 +149,7 @@ class PerfRecord:
                                + "(?P<thing>\(.*?\)|[^:]*): ?(?P<rest>[^ ].*)")
     mapinfo_re = re.compile("\[(?P<addr>0x[0-9a-f]+)\((?P<len>0x[0-9a-f]+)\)"
                             +" @ (?P<offset>[0-9]+|0x[0-9a-f]+)\]")
-    frame_re = re.compile("\.\.\.\.\. *[0-9]+: (?P<pc>[0-9a-f]+)")
+    frame_re = re.compile("\.\.\.\.\. *(?P<index>[0-9]+): (?P<pc>[0-9a-f]+)")
 
     def __init__(self, options):
         self.options = options
@@ -296,7 +296,10 @@ class PerfRecord:
     def handle_sample(self, fh, header):
         cpu = int(header.group('cpu'))
         msec = int(header.group('nsec')) / 1e6
-        pid, tid = map(int, header.group('rest').split(": ")[0].split("/"))
+        ptid, rest = header.group('rest').split(": ", 1)
+        sample_ip, rest = rest.split(" ", 1)
+        pid, tid = map(int, ptid.split("/"))
+        sample_ip = int(sample_ip, 16)
         self.note_thread(pid, tid)
         frames = []
         context = None
@@ -308,8 +311,17 @@ class PerfRecord:
                 pc = int(frame.group('pc'), 16)
                 if pc >= PERF_CONTEXT_MAX:
                     context = pc
-                    continue
+                    if pc == PERF_CONTEXT_USER and frame.group('index') == '0':
+                        # Linux/arm has a bug where the user-mode PC
+                        # isn't recorded in the stack trace.  If the
+                        # sample hit while in user mode, we can get it
+                        # from the PERF_SAMPLE_IP instead.
+                        pc = sample_ip
+                    else:
+                        continue
                 if context == PERF_CONTEXT_USER:
+                    # FIXME: if not on arm, or on fixed arm, try to
+                    # detect duplicate top frame.  Sigh.
                     space = self.spaces.get(pid, None)
                 elif context == PERF_CONTEXT_KERNEL:
                     space = self.spaces[-1]
