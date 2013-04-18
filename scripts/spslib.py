@@ -60,7 +60,7 @@ class SPS:
         rs = map(re.compile, search)
         things = [[]]
         for sample in self.samples:
-            if sample['frames'][2:3] == ["Corrupt Stack"]:
+            if len(sample['frames']) <= 3: # FIXME!
                 continue
             if all(any(r.search(frame)
                        for frame in sample['frames'])
