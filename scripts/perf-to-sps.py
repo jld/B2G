@@ -1,7 +1,8 @@
 #!/usr/bin/env python
-import bisect, json, os, subprocess, sys, re, threading
+import bisect, json, os, subprocess, sys, re
 from datetime import datetime
 from optparse import OptionParser
+import perflegacy
 
 # Constants from include/uapi/linux/perf_event.h:
 def to_u64(x):
@@ -142,15 +143,10 @@ class SymTab:
         print >>sys.stderr, "warning: no file found for %s" % abspath
         return SymTab(abspath)
 
-class PerfRecord:
-    recordline_re = re.compile("(?P<cpu>[0-9]+) (?P<nsec>[0-9]+)"
-                               + " 0x[0-9a-f]+ \[0x[0-9a-f]+\]: "
-                               + "PERF_RECORD_(?P<name>[A-Z0-9_]+)"
-                               + "(?P<thing>\(.*?\)|[^:]*): ?(?P<rest>[^ ].*)")
-    mapinfo_re = re.compile("\[(?P<addr>0x[0-9a-f]+)\((?P<len>0x[0-9a-f]+)\)"
-                            +" @ (?P<offset>[0-9]+|0x[0-9a-f]+)\]")
-    frame_re = re.compile("\.\.\.\.\. *(?P<index>[0-9]+): (?P<pc>[0-9a-f]+)")
+        
 
+
+class PerfRecord:
     def __init__(self, options):
         self.options = options
         self.spaces = {-1: AddrSpace()} # pid => space
@@ -193,12 +189,6 @@ class PerfRecord:
             self.last_short[i] = chr(33)
         self.last_short.append(chr(33))
 
-    def read_dump(self, fh):
-        for line in fh:
-            header = PerfRecord.recordline_re.match(line)
-            if header:
-                self.handle_record(fh, header)
-
     def _read_jsallsyms(self, pid):
         if not self.options.jsallsyms:
             return None
@@ -217,31 +207,28 @@ class PerfRecord:
             self.jsallsyms[pid] = self._read_jsallsyms(pid)
         return self.jsallsyms[pid]
 
-    def handle_record(self, fh, header):
-        kind = header.group('name')
-        if kind == 'MMAP':
-            self.handle_mmap(header)
-        elif kind == 'COMM':
-            self.handle_comm(header)
-        elif kind == 'FORK':
-            self.handle_fork(header)
-        elif kind == 'EXIT':
-            # Not handling this yet...
-            pass
-        elif kind == 'SAMPLE':
-            self.handle_sample(fh, header)
-        else:
-            print >>sys.stderr, ("Unhandled %s record" % kind)
+    def read_dump(self, src):
+        while True: # FIXME make this an iterator
+            rec = src.read()
+            if not rec:
+                break
+            kind = rec['type']
+            if kind == 'sample':
+                self.handle_sample(rec)
+            elif kind == 'mmap':
+                self.handle_mmap(rec)
+            elif kind == 'comm':
+                self.handle_comm(rec)
+            elif kind == 'fork':
+                self.handle_fork(rec)
+        src.finish()
 
-    def handle_mmap(self, header):
-        pid, tid = map(int, header.group('thing').split("/"))
-        mapinfo_str, name = header.group('rest').split(": ")
-        mapinfo = PerfRecord.mapinfo_re.match(mapinfo_str)
-        if not mapinfo:
-            return
-        addr = int(mapinfo.group('addr'), 16)
-        maplen = int(mapinfo.group('len'), 16)
-        offset = int(mapinfo.group('offset'), 16)
+    def handle_mmap(self, rec):
+        pid = rec['pid']
+        addr = rec['addr']
+        maplen = rec['len']
+        offset = rec['offset']
+        name = rec['filename']
         if pid == -1:
             # We're going to use kallsyms.
             if not self.kallsyms:
@@ -279,76 +266,72 @@ class PerfRecord:
                                       js.sym_addrs[0], js)
         self.spaces[pid].mmap(addr, addr + maplen, offset, symtab)
 
-    def handle_comm(self, header):
-        (name, tid) = header.group('rest').rsplit(":", 1)
-        tid = int(tid)
-        self.names[tid] = name
+    def handle_comm(self, rec):
+        self.names[rec['tid']] = rec['comm']
         # FIXME: how do we distinguish an exec from a thread name change?
 
-    def handle_fork(self, header):
-        ppid, ptid = map(int, header.group('rest').strip("()").split(":"))
-        cpid, ctid = map(int, header.group('thing').strip("()").split(":"))
+    def handle_fork(self, rec):
+        ppid = rec['ppid']
+        ptid = rec['ptid']
+        cpid = rec['pid']
+        ctid = rec['tid']
         self.note_thread(cpid, ctid)
         if ppid in self.spaces:
             self.spaces[cpid] = AddrSpace(self.spaces[ppid])
         self.names[ctid] = self.names[ptid]
 
-    def handle_sample(self, fh, header):
-        cpu = int(header.group('cpu'))
-        msec = int(header.group('nsec')) / 1e6
-        ptid, rest = header.group('rest').split(": ", 1)
-        sample_ip, rest = rest.split(" ", 1)
-        pid, tid = map(int, ptid.split("/"))
-        sample_ip = int(sample_ip, 16)
+    def handle_sample(self, rec):
+        cpu = rec['cpu']
+        msec = rec['time'] / 1e6
+        pid = rec['pid']
+        tid = rec['tid']
+        sample_ip = rec['ip']
         self.note_thread(pid, tid)
         frames = []
         context = None
-        for line in fh:
-            if line == "\n":
-                break
-            frame = PerfRecord.frame_re.match(line)
-            if frame:
-                pc = int(frame.group('pc'), 16)
-                if pc >= PERF_CONTEXT_MAX:
-                    context = pc
-                    if pc == PERF_CONTEXT_USER and frame.group('index') == '0':
-                        # Linux/arm has a bug where the user-mode PC
-                        # isn't recorded in the stack trace.  If the
-                        # sample hit while in user mode, we can get it
-                        # from the PERF_SAMPLE_IP instead.
-                        pc = sample_ip
-                    else:
-                        continue
-                if context == PERF_CONTEXT_USER:
-                    # FIXME: if not on arm, or on fixed arm, try to
-                    # detect duplicate top frame.  Sigh.
-                    space = self.spaces.get(pid, None)
-                elif context == PERF_CONTEXT_KERNEL:
-                    space = self.spaces[-1]
+        i = -1
+        for pc in rec['ips']:
+            i = i + 1
+            if pc >= PERF_CONTEXT_MAX:
+                context = pc
+                if i == 0 and pc == PERF_CONTEXT_USER:
+                    # Linux/arm has a bug where the user-mode PC
+                    # isn't recorded in the stack trace.  If the
+                    # sample hit while in user mode, we can get it
+                    # from the PERF_SAMPLE_IP instead.
+                    pc = sample_ip
                 else:
-                    if context:
-                        print >>sys.stderr, \
-                            ("warning: unknown frame context (__u64)%d"
-                             % (context - (1 << 64)))
-                    else:
-                        print >>sys.stderr, \
-                            "warning: frame with no context" % pc
-                    space = None
-                fileinfo = space and space.lookup(pc)
-                if fileinfo:
-                    symtab, offset = fileinfo
-                    syminfo = symtab.lookup(offset)
-                    if syminfo:
-                        name, mod, symoffset = syminfo
-                        frames.append("%s (in %s)" % (name, mod))
-                    else:
-                        frames.append("%#x (in %s)" % (offset, symtab.name))
+                    continue
+            if context == PERF_CONTEXT_USER:
+                # FIXME: if not on arm, or on fixed arm, try to
+                # detect duplicate top frame.  Sigh.
+                space = self.spaces.get(pid, None)
+            elif context == PERF_CONTEXT_KERNEL:
+                space = self.spaces[-1]
+            else:
+                if context:
+                    print >>sys.stderr, \
+                        ("warning: unknown frame context (__u64)%d"
+                         % (context - (1 << 64)))
                 else:
-                    # If the address wasn't even mapped, it's probably junk.
-                    if self.options.clean:
-                        continue
-                    else:
-                        frames.append("%#x" % pc)
+                    print >>sys.stderr, \
+                        "warning: frame with no context" % pc
+                space = None
+            fileinfo = space and space.lookup(pc)
+            if fileinfo:
+                symtab, offset = fileinfo
+                syminfo = symtab.lookup(offset)
+                if syminfo:
+                    name, mod, symoffset = syminfo
+                    frames.append("%s (in %s)" % (name, mod))
+                else:
+                    frames.append("%#x (in %s)" % (offset, symtab.name))
+            else:
+                # If the address wasn't even mapped, it's probably junk.
+                if self.options.clean:
+                    continue
+                else:
+                    frames.append("%#x" % pc)
         # Post-processing:
         if self.options.clean:
             # Make empty stacks stand out & not be self samples on the root.
@@ -401,37 +384,11 @@ def main():
 
     (options, args) = op.parse_args()
 
+    src = perflegacy.ReportParser(options.input, 
+                                  perfcmd = options.perf,
+                                  is_dump = options.use_dump)
     record = PerfRecord(options)
-    if options.use_dump:
-        if options.input == "-":
-            record.read_dump(sys.stdin)
-        else:
-            with open(options.input) as infile:
-                record.read_dump(infile)
-    else:
-        command = [options.perf, "report", "-D", "-i", options.input]
-        perf = subprocess.Popen(command,
-                                stdout = subprocess.PIPE,
-                                stderr = subprocess.PIPE)
-        errbuf = []
-        def errloop():
-            for line in perf.stderr:
-                errbuf.append(line)
-        errthread = threading.Thread(target = errloop)
-        errthread.daemon = True
-        errthread.start()
-        record.read_dump(perf.stdout)
-        errthread.join()
-        perf.communicate()
-        if perf.returncode != 0:
-            print >>sys.stderr, "+ " + " ".join(command)
-            if len(errbuf) > 0 and errbuf[-1][-1:] != "\n":
-                errbuf[-1] += "\n"
-            for line in errbuf:
-                sys.stderr.write(line)
-            print >>sys.stderr, ("perf exited with status %d"
-                                 % perf.returncode)
-            return 1
+    record.read_dump(src)
 
     filename = datetime.now().strftime("perf_%Y%m%d_%H%M%S.txt")
     print >>sys.stderr, "Writing profile to %s" % filename
