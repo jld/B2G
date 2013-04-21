@@ -54,13 +54,17 @@ class ReportParser:
                     sys.stderr.write(line)
                 print >>sys.stderr, ("perf exited with status %d"
                                      % self.proc.returncode)
+                # Arguably this should raise....
 
-    def read(self):
+    def __iter__(self):
+        return self
+    def next(self):
         for line in self.fh:
             header = ReportParser.recordline_re.match(line)
             if header:
                 return self.parse_record(self.fh, header)
-        return None
+        self.finish()
+        raise StopIteration
 
     def parse_record(self, fh, header):
         kind = header.group('name')

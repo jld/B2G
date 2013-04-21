@@ -208,10 +208,7 @@ class PerfRecord:
         return self.jsallsyms[pid]
 
     def read_dump(self, src):
-        while True: # FIXME make this an iterator
-            rec = src.read()
-            if not rec:
-                break
+        for rec in src:
             kind = rec['type']
             if kind == 'sample':
                 self.handle_sample(rec)
@@ -221,7 +218,6 @@ class PerfRecord:
                 self.handle_comm(rec)
             elif kind == 'fork':
                 self.handle_fork(rec)
-        src.finish()
 
     def handle_mmap(self, rec):
         pid = rec['pid']
