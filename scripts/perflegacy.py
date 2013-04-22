@@ -23,11 +23,8 @@ class ReportParser:
         self.needclose = False
         self.errbuf = []
         if is_dump:
-            if path == "-":
-                self.fh = sys.stdin
-            else:
-                self.fh = open(path, "r")
-                self.needclose = True
+            self.fh = open(path, "r")
+            self.needclose = True
             self.proc = None
             self.errthread = None
         else:
