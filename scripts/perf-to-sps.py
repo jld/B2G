@@ -2,7 +2,7 @@
 import bisect, json, os, subprocess, sys, re
 from datetime import datetime
 from optparse import OptionParser
-import perflegacy
+import perfdata, perflegacy
 
 # Constants from include/uapi/linux/perf_event.h:
 def to_u64(x):
@@ -143,8 +143,6 @@ class SymTab:
         print >>sys.stderr, "warning: no file found for %s" % abspath
         return SymTab(abspath)
 
-        
-
 
 class PerfRecord:
     def __init__(self, options):
@@ -225,6 +223,8 @@ class PerfRecord:
         maplen = rec['len']
         offset = rec['offset']
         name = rec['filename']
+        if pid == 0xFFFFFFFF:
+            pid = -1
         if pid == -1:
             # We're going to use kallsyms.
             if not self.kallsyms:
@@ -373,16 +373,22 @@ def main():
                   help="specify name or path of perf(1) executable")
     op.add_option("-i", "--input", dest='input', metavar="FILE",
                   default="perf.data",
-                  help="read perf records from FILE; \"-\" means stdin")
+                  help="read perf records from FILE")
     op.add_option("-D", "--use-dump", dest='use_dump', action='store_true',
                   help=("accept input in |perf report -D| text dump format"
                         + " instead of a binary perf.data file"))
 
     (options, args) = op.parse_args()
 
-    src = perflegacy.ReportParser(options.input, 
-                                  perfcmd = options.perf,
-                                  is_dump = options.use_dump)
+    src = None
+    if not options.use_dump:
+        # If it's not a miniperf file, src remains None.
+        # (Should this try "miniperf.data" if -i isn't given?)
+        src = perfdata.MiniPerfReader(open(options.input, "rb"))
+    if not src:
+        src = perflegacy.ReportParser(options.input,
+                                      perfcmd = options.perf,
+                                      is_dump = options.use_dump)
     record = PerfRecord(options)
     record.read_dump(src)
 
