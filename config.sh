@@ -29,7 +29,7 @@ case `uname` in
 esac
 
 GITREPO=${GITREPO:-"git://github.com/jld/b2g-manifest"}
-BRANCH=${BRANCH:-profiling-v1}
+BRANCH=${BRANCH:-miniperf}
 
 GIT_TEMP_REPO="tmp_manifest_repo"
 if [ -n "$2" ]; then
