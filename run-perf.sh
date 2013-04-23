@@ -24,6 +24,30 @@ symfs=$perftmp/symfs
 kallsyms=$perftmp/kallsyms
 bootstamp=$perftmp/bootstamp
 
+run_target_perf() {
+    local cmd=$1
+    {   echo "$1"' & perf_pid=$!';
+	{   sleep 0.25
+	    echo >&2
+	    echo >&2
+	    echo "Press Enter to stop recording..." >&2
+	} &
+	    # XXX could this be done with an INT trap?
+	    # Or would that kill the adb as well?
+	read
+	echo 'kill -INT -$perf_pid; wait $perf_pid; exit'
+    } | "$ADB" shell
+    "$ADB" pull /cache/perf.data "$perftmp"/
+	# Refresh kallsyms if /proc/1 mtime (== boot time) changes.
+	# Note: This may not be right if modules are dynamically loaded.
+    proc1_info=$("$ADB" shell ls -ld /proc/1)
+    touch "$bootstamp"
+    if [ "$proc1_info" != "$(cat "$bootstamp")" ]; then
+	echo "$proc1_info" > "$bootstamp"
+	"$ADB" pull /proc/kallsyms "$perftmp"/
+    fi
+}
+
 case $1 in
     report)
 	shift
@@ -59,26 +83,12 @@ case $1 in
 	if [ "$need_perf" -ne 0 ]; then
 	    "$ADB" push "$target_perf" /cache/perf
 	fi
-	{   echo 'cd /cache && ./perf record '"$*"' & perf_pid=$!';
-	    {   sleep 0.25
-		echo >&2
-		echo >&2
-		echo "Press Enter to stop recording..." >&2
-	    } &
-	    # XXX could this be done with an INT trap?
-	    # Or would that kill the adb as well?
-	    read
-	    echo 'kill -INT -$perf_pid; wait $perf_pid; exit'
-	} | "$ADB" shell
-	"$ADB" pull /cache/perf.data "$perftmp"/
-	# Refresh kallsyms if /proc/1 mtime (== boot time) changes.
-	# Note: This may not be right if modules are dynamically loaded.
-	proc1_info=$("$ADB" shell ls -ld /proc/1)
-	touch "$bootstamp"
-	if [ "$proc1_info" != "$(cat "$bootstamp")" ]; then
-	    echo "$proc1_info" > "$bootstamp"
-	    "$ADB" pull /proc/kallsyms "$perftmp"/
-	fi
+	run_target_perf 'cd /cache && ./perf record '"$*"
+	;;
+
+    minirecord)
+	shift
+	run_target_perf 'miniperf-record -o /cache/perf.data '"$*"
 	;;
 
     sps)
@@ -91,7 +101,7 @@ case $1 in
 
     record-sps)
 	shift
-	"$0" record -a -g "$@"
+	"$0" minirecord "$@"
 	"$0" sps
 	;;
 
