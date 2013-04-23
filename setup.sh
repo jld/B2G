@@ -10,6 +10,8 @@ if [ "${B2G_PROFILING:-0}" != 0 ]; then
     case $(uname -ms) in
 	"Linux x86_64") HOST_TRIPLE=x86_64-linux-gnu ;;
 	"Linux i686") HOST_TRIPLE=i686-linux-gnu ;;
+	"Darwin x86_64") HOST_TRIPLE=x86_64-apple-darwin ;;
+	"Darwin i386") HOST_TRIPLE=i386-apple-darwin ;;
 	*) echo "Unknown host platform: $(uname -ms)" >&2; exit 1 ;;
     esac
     # FIXME: all this needs to be conditional for arm targets
