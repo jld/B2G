@@ -119,10 +119,16 @@ class SymTab:
             attempts.append(os.path.join(PRODUCT_OUT, "symbols", path))
             attempts.append(os.path.join(PRODUCT_OUT, "root", path))
             attempts.append(os.path.join(PRODUCT_OUT, path))
-        for attempt in filter(file_exists, attempts):
-            loadcmds = []
-            readelf = subprocess.Popen([READELF, "-l", attempt],
+        attempts = filter(file_exists, attempts)
+        # Use the last file for the readelf, because elfhack changes
+        # the load commands, and we want the load commands from what
+        # we actually run (elfhacked) but the symbols from the
+        # unstripped one (unhacked).
+        if attempts:
+            readelf = subprocess.Popen([READELF, "-l", attempts[-1]],
                                        stdout = subprocess.PIPE)
+        for attempt in attempts:
+            loadcmds = []
             for line in readelf.stdout:
                 if not line.startswith("  LOAD "):
                     continue
@@ -130,6 +136,14 @@ class SymTab:
                 if len(fields) < 5:
                     # Future-proof against 64-bit
                     fields += readelf.stdout.readline().split()
+                # elfhack adds a no-permissions mapping to reserve the
+                # address space hole where relocations used to go,
+                # with filesize==memsize, because breakpad would be
+                # confused by anon mappings there.  It aliases the
+                # actual .text at the wrong address, so we need to
+                # filter it out.
+                if not fields[5].startswith("R"):
+                    continue
                 offset, virtaddr, physaddr, filesize, memsize = \
                     (int(s, 16) for s in fields[:5])
                 loadcmds.append((virtaddr, filesize, offset))
