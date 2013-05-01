@@ -4,7 +4,7 @@ set -e
 . "$B2G_DIR/load-config.sh"
 set -u
 
-PATH=$PATH:$B2G_DIR/out/host/linux-x86/bin
+PATH=$PATH:$B2G_DIR/out/host/`uname -s | tr A-Z a-z`-x86/bin
 : ${ADB:=adb}
 : ${PRODUCT_OUT:=$B2G_DIR/out/target/product/$DEVICE}
 : ${TARGET_TRIPLE:=arm-linux-androideabi}
