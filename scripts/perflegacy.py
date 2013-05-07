@@ -83,7 +83,7 @@ class ReportParser:
     def parse_fork(self, header, out):
         out['ppid'], out['ptid'] = \
             map(int, header.group('rest').strip("()").split(":"))
-        out['cpid'], out['ctid'] = \
+        out['pid'], out['tid'] = \
             map(int, header.group('thing').strip("()").split(":"))
 
     def parse_comm(self, header, out):
