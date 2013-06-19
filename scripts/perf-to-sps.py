@@ -300,21 +300,26 @@ class PerfRecord:
         frames = []
         context = None
         i = -1
-        for pc in rec['ips']:
+        ips = rec['ips']
+        if len(ips) >= 2 and ips[0] == PERF_CONTEXT_USER:
+            # Linux/arm had a bug where the user-mode PC isn't recorded
+            # in the stack trace.  If the sample hit while in user mode,
+            # we can get it from the PERF_SAMPLE_IP instead.
+            #
+            # But if we're on a fixed kernel (or on x86), then the user
+            # leaf sample will (correctly) be the PC and we shouldn't do
+            # that.  Since we can't directly tell if the kernel is
+            # fixed, we fix only stacks where the innermost sample is a
+            # user frame not equal to the PC, at the risk of dropping a
+            # frame in cases of recursion.
+            if ips[1] != sample_ip:
+                ips[1:1] = [sample_ip]
+        for pc in ips:
             i = i + 1
             if pc >= PERF_CONTEXT_MAX:
                 context = pc
-                if i == 0 and pc == PERF_CONTEXT_USER:
-                    # Linux/arm has a bug where the user-mode PC
-                    # isn't recorded in the stack trace.  If the
-                    # sample hit while in user mode, we can get it
-                    # from the PERF_SAMPLE_IP instead.
-                    pc = sample_ip
-                else:
-                    continue
+                continue
             if context == PERF_CONTEXT_USER:
-                # FIXME: if not on arm, or on fixed arm, try to
-                # detect duplicate top frame.  Sigh.
                 space = self.spaces.get(pid, None)
             elif context == PERF_CONTEXT_KERNEL:
                 space = self.spaces[-1]
