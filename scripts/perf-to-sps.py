@@ -338,7 +338,10 @@ class PerfRecord:
                         mod = "UNNAMED"
                     frames.append("%s (in %s)" % (name, mod))
                 else:
-                    frames.append("%#x (in %s)" % (offset, symtab.name))
+                    if symtab.name == "//anon":
+                        frames.append("(JIT-compiled code)")
+                    else:
+                        frames.append("%#x (in %s)" % (offset, symtab.name))
             else:
                 # If the address wasn't even mapped, it's probably junk.
                 if self.options.clean:
