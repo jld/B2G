@@ -333,6 +333,9 @@ class PerfRecord:
                 syminfo = symtab.lookup(offset)
                 if syminfo:
                     name, mod, symoffset = syminfo
+                    if mod == "":
+                        # Shouldn't happen, but let's make it obvious if it does:
+                        mod = "UNNAMED"
                     frames.append("%s (in %s)" % (name, mod))
                 else:
                     frames.append("%#x (in %s)" % (offset, symtab.name))
