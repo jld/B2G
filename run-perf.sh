@@ -17,7 +17,7 @@ case $(uname -ms) in
     *) echo "Unknown host platform: $(uname -ms)" >&2; exit 1 ;;
 esac
 
-host_perf=$B2G_DIR/prebuilt/alt-toolchain/perf/$HOST_TRIPLE-perf
+host_perf=${PERF:-$B2G_DIR/prebuilt/alt-toolchain/perf/$HOST_TRIPLE-perf}
 target_perf=$B2G_DIR/prebuilt/alt-toolchain/perf/$TARGET_TRIPLE-perf
 
 perftmp=$PRODUCT_OUT/perf.tmp
