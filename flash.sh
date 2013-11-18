@@ -67,6 +67,16 @@ fastboot_flash_image()
 
 flash_fastboot()
 {
+	local project=$2
+	case $project in
+	"system"|"boot"|"userdata"|"")
+		;;
+	*)
+		echo "$0: Unrecognized project: $project"
+		return 1
+		;;
+	esac
+
 	case $DEVICE in
 	"helix")
 		run_adb reboot oem-1
@@ -80,15 +90,15 @@ flash_fastboot()
 
 	if [ $? -ne 0 ]; then
 		echo Couldn\'t setup fastboot
-		return -1
+		return 1
 	fi
-	case $2 in
+	case $project in
 	"system" | "boot" | "userdata")
 		fastboot_flash_image $2 &&
 		run_fastboot reboot
 		;;
 
-	*)
+	"")
 		# helix doesn't support erase command in fastboot mode.
 		VERB="erase"
 		if [ "$DEVICE" == "mako" ] || [ "$DEVICE" == "flo" ]; then
@@ -114,6 +124,16 @@ flash_fastboot()
 
 flash_heimdall()
 {
+	local project=$1
+	case $project in
+	"system"|"kernel"|"")
+		;;
+	*)
+		echo "$0: Unrecognized project: $project"
+		return 1
+		;;
+	esac
+
 	if [ ! -f "`which \"$HEIMDALL\"`" ]; then
 		echo Couldn\'t find heimdall.
 		echo Install Heimdall v1.3.1 from http://www.glassechidna.com.au/products/heimdall/
@@ -125,16 +145,16 @@ flash_heimdall()
 		echo Couldn\'t reboot into download mode. Hope you\'re already in download mode
 	fi
 
-	case $1 in
+	case $project in
 	"system")
-		$HEIMDALL flash --factoryfs out/target/product/$DEVICE/$1.img
+		$HEIMDALL flash --factoryfs out/target/product/$DEVICE/$project.img
 		;;
 
 	"kernel")
 		$HEIMDALL flash --kernel device/samsung/$DEVICE/kernel
 		;;
 
-	*)
+	"")
 		$HEIMDALL flash --factoryfs out/target/product/$DEVICE/system.img --kernel device/samsung/$DEVICE/kernel &&
 		update_time
 		;;
@@ -232,6 +252,14 @@ while [ $# -gt 0 ]; do
 		;;
 	"-f")
 		FULLFLASH=true
+		;;
+	"-h"|"--help")
+		echo "Usage: $0 [-s device] [-f] [project]"
+		exit 0
+		;;
+	"-"*)
+		echo "$0: Unrecognized option: $1"
+		exit 1
 		;;
 	*)
 		FULLFLASH=true
