@@ -114,18 +114,27 @@ def get_remote_b2g_pids():
     procs = remote_toolbox_cmd('ps').split('\n')
     master_pid = None
     child_pids = []
+    nuwa_pid = None
     for line in procs:
+        fields = line.split()
         if re.search(r'/b2g\s*$', line):
             if master_pid:
                 raise Exception('Two copies of b2g process found?')
-            master_pid = int(line.split()[1])
+            master_pid = int(fields[1])
         if re.search(r'/plugin-container\s*$', line):
-            child_pids.append(int(line.split()[1]))
+            user = fields[0]
+            pid = int(fields[1])
+            if user == 'root' and _is_process_nuwa(pid):
+                if nuwa_pid:
+                    raise Exception('Two Nuwa processes found?')
+                nuwa_pid = pid
+            else:
+                child_pids.append(pid)
 
     if not master_pid:
         raise Exception('b2g does not appear to be running on the device.')
 
-    return (master_pid, child_pids)
+    return (master_pid, child_pids, nuwa_pid)
 
 def pull_procrank_etc(out_dir):
     '''Get the output of procrank and a few other diagnostic programs and save
@@ -166,8 +175,7 @@ def notify_and_pull_files(outfiles_prefixes,
                           out_dir,
                           optional_outfiles_prefixes=[],
                           fifo_msg=None,
-                          signal=None,
-                          ignore_nuwa=os.getenv("MOZ_IGNORE_NUWA_PROCESS")):
+                          signal=None):
     '''Send a message to the main B2G process (either by sending it a signal or
     by writing to a fifo that it monitors) and pull files created as a result.
 
@@ -209,7 +217,8 @@ def notify_and_pull_files(outfiles_prefixes,
     all_outfiles_prefixes = outfiles_prefixes + optional_outfiles_prefixes \
                             + unified_outfiles_prefixes
 
-    (master_pid, child_pids) = get_remote_b2g_pids()
+    (master_pid, child_pids, nuwa_pid) = get_remote_b2g_pids()
+    # nuwa_pid is unused, because we currently don't get reports from Nuwa
     child_pids = set(child_pids)
     old_files = _list_remote_temp_files(outfiles_prefixes + unified_outfiles_prefixes)
 
@@ -219,8 +228,6 @@ def notify_and_pull_files(outfiles_prefixes,
         _write_to_remote_file('/data/local/debug_info_trigger', fifo_msg)
 
     num_expected_responses = 1 + len(child_pids)
-    if ignore_nuwa:
-        num_expected_responses -= 1
     num_expected_files = len(outfiles_prefixes) * num_expected_responses
     num_unified_expected = len(unified_outfiles_prefixes)
 
@@ -338,3 +345,10 @@ def _remove_files_from_device(outfiles_prefixes, old_files):
 
     for f in files_to_remove:
         remote_toolbox_cmd('rm', f)
+
+def _is_process_nuwa(pid):
+    procstat = remote_toolbox_cmd('cat', '/proc/%d/status' % pid).split('\n')
+    for statline in procstat:
+        if re.search(r'^Name:\s*\(Nuwa\)\s*$', statline):
+            return True
+    return False
