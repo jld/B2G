@@ -20,11 +20,24 @@ fi
 
 if [ "$DEVICE" = "generic_x86" ]; then
     EMULATOR=$TOOLS_PATH/emulator-x86
-    KERNEL=$B2G_HOME/prebuilts/qemu-kernel/x86/kernel-qemu
+    KERNELDIR=$B2G_HOME/prebuilts/qemu-kernel/x86
+    KERNELNAME=kernel-qemu
 else
     EMULATOR=$TOOLS_PATH/emulator
-    KERNEL=$B2G_HOME/prebuilts/qemu-kernel/arm/kernel-qemu-armv7
+    KERNELDIR=$B2G_HOME/prebuilts/qemu-kernel/arm
+    KERNELNAME=kernel-qemu-armv7
     TAIL_ARGS="$TAIL_ARGS -cpu cortex-a8"
+fi
+
+case $DEVICE_NAME in
+    emulator*-kk) KERNELVER=3.4 ;;
+    *) KERNELVER=2.6 ;;
+esac
+
+if [ -e "$KERNELDIR/$KERNELVER/$KERNELNAME" ]; then
+    KERNEL=$KERNELDIR/$KERNELVER/$KERNELNAME
+else
+    KERNEL=$KERNELDIR/$KERNELNAME
 fi
 
 SDCARD_SIZE=${SDCARD_SIZE:-512M}
